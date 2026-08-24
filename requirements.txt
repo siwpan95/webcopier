@@ -1,0 +1,11 @@
+# webcopier dependencies (auto-generated 2026-08-20)
+beautifulsoup4
+curl_cffi
+ddddocr
+lxml
+newspaper
+Pillow
+readability
+requests
+requests_cache
+trafilatura
