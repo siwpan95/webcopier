@@ -1,0 +1,16 @@
+{
+  "name": "webcopier",
+  "version": "1.0.0",
+  "entry": "WebCopier_GUI.py",
+  "interface": ["fetch", "extract"],
+  "description": "整站/BFS 网页爬取：暂停恢复、反爬身份池、图片下载、sitemap 支持",
+  "python": "auto",
+  "config": {
+    "save_dir": "保存目录",
+    "method": "正文抽取方式（trafilatura/…）",
+    "concurrency": "并发数",
+    "max_depth": "BFS 最大深度",
+    "proxy": "代理地址（可选）",
+    "cookie_file": "Cookie 文件路径（可选，本地不进仓）"
+  }
+}
