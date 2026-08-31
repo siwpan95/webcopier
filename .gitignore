@@ -6,3 +6,6 @@ __pycache__/
 build/
 dist/
 release/
+
+# 调试/临时产物（v5.5）
+.debug/

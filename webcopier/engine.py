@@ -130,11 +130,20 @@ class CrawlerEngine:
     #  robots.txt
     # -------------------------------------------------------
     def init_robots(self, user_agent, base_url=None):
-        """读取 robots.txt，返回 (RobotFileParser, crawl_delay)。"""
+        """读取 robots.txt，返回 (RobotFileParser, crawl_delay)。
+
+        v5.5 修复：base_url 为空时 urljoin 会产出 '/robots.txt' 这种无协议的
+        相对地址，RobotFileParser 直接抛 "unknown url type"，导致 robots 检查
+        被静默跳过（表现为「默认允许抓取」）。此处显式短路并如实告知。
+        """
+        if not base_url:
+            self.log("[WARN] 未提供基准 URL，跳过 robots.txt 检查，默认允许抓取")
+            return None, 0.0
+
         robot = RobotFileParser()
         crawl_delay = 0.0
         try:
-            robots_url = urljoin(base_url or "", "/robots.txt")
+            robots_url = urljoin(base_url, "/robots.txt")
             robot.set_url(robots_url)
             robot.read()
             # v5.4: 读取 Crawl-delay 指令
@@ -236,8 +245,13 @@ class CrawlerEngine:
         robot = None
         crawl_delay = 0.0
         if respect_robots:
+            # v5.5: 以首个 URL 为基准解析 robots.txt（此前 base_url 恒为 None）
+            base_url = url_list[0] if url_list else None
             robot, crawl_delay = self.init_robots(
-                headers.get("User-Agent", ""))
+                headers.get("User-Agent", ""), base_url=base_url)
+
+        # v5.5 修复：total 此前在赋值前被引用（NameError）
+        total = len(url_list)
 
         # v5.4: 使用 RateLimiter 确保整体请求速率合规
         rate_limiter = RateLimiter(
@@ -249,7 +263,6 @@ class CrawlerEngine:
         self.log(f"[LAUNCH] 批量抓取开始：{total} 个网址，并发数={concurrency}，"
                  f"限速={actual_delay}s/请求")
 
-        total = len(url_list)
         completed = 0
         completed_lock = threading.Lock()
 
@@ -272,6 +285,8 @@ class CrawlerEngine:
                     self.progress(completed, total, f"处理中 {completed}/{total}")
                 return idx, None, "被 robots.txt 禁止"
 
+            # v5.5 修复：异常时 text 未绑定会导致 UnboundLocalError
+            text = None
             try:
                 text = self.single_fetch(
                     real_url, method, headers, proxies=proxies,

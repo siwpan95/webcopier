@@ -22,6 +22,38 @@ try:
 except ImportError:
     _HAS_REQUESTS_CACHE = False
 
+# v5.5: Brotli 解码能力检测
+# requests 自身只支持 gzip/deflate；若响应为 Content-Encoding: br 且本机
+# 无 brotli / brotlicffi，resp.text 会是乱码（此前 trow.cc 抓取全部失败即此因）。
+try:
+    import brotli as _brotli_mod            # noqa: F401
+    _HAS_BROTLI = True
+except ImportError:
+    try:
+        import brotlicffi as _brotli_mod    # noqa: F401
+        _HAS_BROTLI = True
+    except ImportError:
+        _HAS_BROTLI = False
+
+
+def strip_unsupported_encodings(headers: dict) -> dict:
+    """从 Accept-Encoding 中移除本机无法解码的算法。
+
+    避免服务器返回 br 压缩而 requests 解不开导致正文乱码。
+    """
+    if _HAS_BROTLI:
+        return headers
+    ae = headers.get("Accept-Encoding") or headers.get("accept-encoding")
+    if not ae:
+        return headers
+    parts = [p.strip() for p in ae.split(",")]
+    kept = [p for p in parts if p.split(";")[0].strip().lower() != "br"]
+    if kept:
+        headers["Accept-Encoding"] = ", ".join(kept)
+    else:
+        headers.pop("Accept-Encoding", None)
+    return headers
+
 # 模块级缓存 Session（惰性初始化，线程安全）
 import threading
 _cache_session = None
@@ -214,6 +246,9 @@ def http_get(url, headers=None, timeout=30, retries=1,
     if cookie_str:
         req_headers["Cookie"] = cookie_str
 
+    # v5.5: 剔除本机无法解码的压缩算法（brotli），防止 resp.text 变成乱码
+    req_headers = strip_unsupported_encodings(req_headers)
+
     # 选择后端
     if use_cache and _HAS_REQUESTS_CACHE:
         return _cached_get(url, req_headers, timeout,
@@ -245,6 +280,15 @@ def _cached_get(url, headers, timeout, proxies,
     return resp
 
 
+def _assert_decodable(resp):
+    """v5.5: 校验响应体可被解压，避免把 brotli 乱码当正文返回。"""
+    enc = (resp.headers.get("Content-Encoding") or "").strip().lower()
+    if enc == "br" and not _HAS_BROTLI:
+        raise RuntimeError(
+            "服务器返回 Brotli 压缩内容，但本机未安装解码库。"
+            "请执行 pip install brotli 后重试。")
+
+
 def _requests_get(url, headers, timeout, retries, proxies,
                   random_delay, verify):
     """标准 requests 后端（含自适应重试和反爬处理）"""
@@ -260,6 +304,8 @@ def _requests_get(url, headers, timeout, retries, proxies,
                 allow_redirects=True, verify=verify,
             )
             resp.raise_for_status()
+            # v5.5: 兜底——若服务器仍返回 brotli 而本机无解码器，直接报错而非返回乱码
+            _assert_decodable(resp)
             # 自动检测编码（参考 crawlProject）
             if resp.encoding is None or resp.encoding == "ISO-8859-1":
                 resp.encoding = resp.apparent_encoding or "utf-8"
