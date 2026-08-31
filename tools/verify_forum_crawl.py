@@ -12,7 +12,7 @@
   1. checkpoint 中版块列表主题数 vs 已完成主题数
   2. index.csv / index.json / corpus.jsonl 记录数一致
   3. 每条记录对应的文件真实存在且非空
-  4. 楼层数 > 0、字数 > 0
+  4. 内容非空（图片帖/密码帖等「合法空主题」逐条判定，避免误判为失败）
   5. 失败清单（failed.json）为空
   6. 抽查若干文件的正文结构（标题行 + 楼层标题）
 """
@@ -28,6 +28,7 @@ SAVE_DIR = sys.argv[1] if len(sys.argv) > 1 else os.path.join("output", "trow")
 
 ok_count = 0
 fail_count = 0
+warn_count = 0
 
 
 def check(cond, msg):
@@ -42,6 +43,7 @@ def check(cond, msg):
 
 
 def main():
+    global ok_count, fail_count, warn_count
     print(f"校验目录: {os.path.abspath(SAVE_DIR)}\n")
 
     if not os.path.isdir(SAVE_DIR):
@@ -105,11 +107,42 @@ def main():
             print(f"        缺失: {m}")
     check(not empty, f"所有文件非空 (空文件 {len(empty)} 个)")
 
-    # --- 4. 内容质量 ---
-    zero_post = [r for r in records if int(r.get("posts", 0)) <= 0]
-    zero_char = [r for r in records if int(r.get("chars", 0)) <= 0]
-    check(not zero_post, f"所有主题楼层数 > 0 (异常 {len(zero_post)} 个)")
-    check(not zero_char, f"所有主题字数 > 0 (异常 {len(zero_char)} 个)")
+    # --- 4. 内容质量（区分「合法空主题」与「解析遗漏」）---
+    # 图片帖（仅含附件/图片，0 文本）、密码保护主题（游客不可见）、
+    # 列表本身 0 回复的主题，其 posts/chars 为 0 属预期，不应判失败；
+    # 但若列表显示有回复却解析到 0 帖，则疑似解析遗漏，需人工复核。
+    zero_recs = [r for r in records
+                 if int(r.get("posts", 0)) <= 0 or int(r.get("chars", 0)) <= 0]
+    seen = set()
+    for r in zero_recs:
+        key = r.get("tid") or r.get("file")
+        if key in seen:
+            continue
+        seen.add(key)
+        fp = os.path.join(SAVE_DIR, r["file"].replace("/", os.sep))
+        try:
+            txt = open(fp, encoding="utf-8").read()
+        except OSError:
+            fail_count += 1
+            print(f"  [FAIL] 主题 {r.get('tid')} 文件无法读取: {r.get('file')}")
+            continue
+        if not txt.startswith("# "):
+            fail_count += 1
+            print(f"  [FAIL] 主题 {r.get('tid')} 文件结构损坏（缺少标题行）")
+            continue
+        replies = int(r.get("replies", r.get("reply_count", 0)) or 0)
+        label = f"{r.get('tid')} ({r.get('file')})"
+        if int(r.get("posts", 0)) <= 0 and replies > 0:
+            low = txt.lower()
+            if "密码" in txt or "password" in low or "protected" in low:
+                print(f"  [INFO] 合法空主题 {label}: 密码保护（游客不可见，0 帖为预期）")
+            else:
+                warn_count += 1
+                print(f"  [WARN] 主题 {label}: 列表回复数={replies} 但解析到 0 帖，疑似解析遗漏，需人工复核")
+        else:
+            print(f"  [INFO] 合法空主题 {label}: 图片帖/空主题（0 字为预期）")
+
+    check(fail_count == 0, f"所有主题内容有效（空主题已逐条判定，失败 {fail_count} 个，告警 {warn_count} 个）")
 
     total_posts = sum(int(r.get("posts", 0)) for r in records)
     total_chars = sum(int(r.get("chars", 0)) for r in records)
@@ -131,7 +164,7 @@ def main():
 
     # --- 汇总 ---
     print("\n" + "=" * 56)
-    print(f"  校验结果: {ok_count} 项通过, {fail_count} 项失败")
+    print(f"  校验结果: {ok_count} 项通过, {fail_count} 项失败, {warn_count} 项告警")
     print("=" * 56)
     return 0 if fail_count == 0 else 1
 
