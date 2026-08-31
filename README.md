@@ -112,6 +112,46 @@ webcopier config --set delay=3 concurrency=8
 webcopier config --reset
 ```
 
+### es — Everything 搜索（本地文件索引）
+
+把 [voidtools Everything](https://www.voidtools.com/) 的官方命令行接口 `es.exe`（MIT 许可，收录于 `bin/`）接入 WebCopier。需先运行 Everything 主程序（ES 通过命名管道 `\\.\PIPE\Everything IPC` 通信）。
+
+```bat
+REM 诊断连通性（Everything 是否在运行）
+webcopier es --status
+
+REM 搜索并表格展示（带大小）
+webcopier es "webcopier ext:md" --size
+
+REM 仅输出路径清单并落盘
+webcopier es "D:\webcopier\*.html" -f paths -o hits.txt
+
+REM 限定目录 + 正则 + 结构化 JSON
+webcopier es "\.md$" -r -p -path D:\docs\ -f json
+
+REM 整合：把搜到的本地网页直接送入正文提取器
+webcopier es "ext:html" --extract --extract-dir output\_es_extract -f paths
+```
+
+| 参数 | 说明 |
+|---|---|
+| `--status` | 诊断 ES/Everything 连通性（版本 + 管道可用性） |
+| `-f/--format` | `table`（默认）/ `paths` / `json` / `csv` |
+| `--size` | 表格模式追加文件大小列 |
+| `--columns` | 附加显示列（size/dm/dc/da/ext/attribs…） |
+| `-o/--out` | 把路径清单写入文件（UTF-8） |
+| `-p/--match-path` / `-i/--case` / `-r/--regex` | 匹配完整路径 / 区分大小写 / 正则 |
+| `--path` | 限定搜索目录（目录尾部反斜杠 `D:\dir\`） |
+| `-n/--count` | 结果上限 |
+| `--open N` | 在资源管理器中定位第 N 项 |
+| `--extract` | 把结果中的本地网页 `.html/.htm/.mht` 送入正文提取器 |
+| `--extract-all` | 对所有结果（不限于网页）尝试提取 |
+| `--extract-dir` / `--extract-method` / `--extract-format` | 正文输出目录 / 提取方式 / 输出格式 |
+| `--es-path` / `--instance` / `--timeout` | 指定 es.exe 路径 / Everything 实例 / 超时秒 |
+| `--es-args` | 其余参数**原样透传**给 es.exe（`REMAINDER`，写在所有参数之后） |
+
+**整合要点**：`--extract` 借助 `http_client.file_get` 把本地文件路径转成 `file://` URL，从而复用 WebCopier 既有的 6 种正文提取器与噪声过滤，无需把 Everything 重写为 Python。
+
 ## 配置
 
 编辑 `config.json` 调整配置参数（超时、并发数、提取方式等），也可用 `webcopier config --set` 修改。
@@ -122,15 +162,20 @@ webcopier config --reset
 webcopier/
 ├── webcopier.bat        # 命令提示符启动器
 ├── WebCopier_GUI.py     # GUI 入口
+├── bin/                 # 第三方命令行工具（含 es.exe，MIT 许可）
+│   ├── es.exe           # Everything 命令行搜索（voidtools，MIT）
+│   ├── ES-LICENSE.txt   # ES 许可文件
+│   └── ES-README.md     # ES 用途与合规说明
 ├── webcopier/           # 核心包
 │   ├── main.py          # 统一入口（无参数 GUI / 有参数 CLI）
 │   ├── __main__.py      # python -m webcopier
 │   ├── cli.py           # 命令行接口（v5.5 新增）
 │   ├── forum.py         # 论坛抓取模块（v5.5 新增）
+│   ├── everything.py    # Everything/ES 包装层（v5.5 新增）
 │   ├── gui.py           # GUI 界面
 │   ├── engine.py        # 抓取引擎
 │   ├── extractors.py    # 6 种正文提取方式
-│   ├── http_client.py   # HTTP 客户端
+│   ├── http_client.py   # HTTP 客户端（v5.5 增加 file:// 支持）
 │   ├── playwright_utils.py
 │   ├── link_finder.py   # 链接发现
 │   ├── session.py       # Session 管理
@@ -146,8 +191,9 @@ webcopier/
 
 ### v5.5
 
-- 新增命令行接口 `cli.py`（fetch / batch / crawl / forum / config）与 `webcopier.bat` 启动器
+- 新增命令行接口 `cli.py`（fetch / batch / crawl / forum / config / **es**）与 `webcopier.bat` 启动器
 - 新增论坛抓取模块 `forum.py`：列表翻页 + 主题二级页翻页 + 断点续传 + 索引导出
+- 新增 Everything/ES 整合：`bin/es.exe`（MIT）+ `everything.py` 包装层，`es` 子命令搜索/诊断；`http_client.file_get` 打通 `file://` 管线使 ES 结果可送入正文提取器
 - 修复 `http_client` Brotli 解码缺失导致正文乱码（自动剔除不支持的 `br` 编码，缺库时明确报错）
 - 修复 `engine.batch_fetch` 中 `total` 未定义、`text` 未绑定的 NameError
 - 修复 `engine.init_robots` 基准 URL 缺失导致 robots.txt 检查被静默跳过（现以首个 URL 为基准）

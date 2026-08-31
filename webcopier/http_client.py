@@ -7,6 +7,7 @@ HTTP 客户端层 v5.1：请求发送、重试机制、代理支持、随机延�
 - 融合 crawlProject 反爬最佳实践
 """
 
+import re
 import time
 import random
 import requests
@@ -17,9 +18,9 @@ from .constants import DEFAULT_HEADERS, ANTICRAWL_STATUS_CODES
 #  可选依赖
 # ============================================================
 try:
-    import requests_cache
+    import requests_cache  # 可选依赖：缓存是锦上添花，其传递依赖（如 bson）损坏时不应拖垮整个 CLI
     _HAS_REQUESTS_CACHE = True
-except ImportError:
+except Exception:  # 兼容 ImportError 与传递依赖损坏引发的 AttributeError 等
     _HAS_REQUESTS_CACHE = False
 
 # v5.5: Brotli 解码能力检测
@@ -192,6 +193,107 @@ def parse_cookie_string(cookie_str: str) -> dict:
 
 
 # ============================================================
+#  本地文件（file:// 协议）
+# ============================================================
+
+class FileResponse:
+    """本地文件响应对象，接口对齐 requests.Response 的常用子集。
+
+    使提取器（extractors.py）无需改动即可处理 file:// URL，
+    从而把 Everything 搜索到的本地网页直接接入正文提取流程。
+    """
+    __slots__ = ("text", "content", "status_code", "encoding",
+                 "apparent_encoding", "headers", "url", "reason")
+
+    def __init__(self, url, text, encoding="utf-8"):
+        self.url = url
+        self.text = text
+        self.content = text.encode(encoding, errors="replace")
+        self.encoding = encoding
+        self.apparent_encoding = encoding
+        self.status_code = 200
+        self.reason = "OK"
+        self.headers = {"Content-Type": f"text/html; charset={encoding}",
+                        "Content-Encoding": "identity"}
+
+    def raise_for_status(self):
+        return None
+
+    def __repr__(self):
+        return f"<FileResponse [{self.status_code}] {self.url}>"
+
+
+# <meta charset=...> / <meta ... content="text/html; charset=...">
+_META_CHARSET_RE = re.compile(
+    rb"""<meta[^>]+(?:charset\s*=\s*["']?\s*|content\s*=\s*["'][^"']*charset\s*=\s*)
+        ([A-Za-z0-9_\-]+)""",
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def _detect_file_encoding(data: bytes) -> str:
+    """按 meta charset → BOM → utf-8 → gbk 的顺序判断本地文件编码。"""
+    if data.startswith(b"\xef\xbb\xbf"):
+        return "utf-8-sig"
+    if data.startswith(b"\xff\xfe") or data.startswith(b"\xfe\xff"):
+        return "utf-16"
+
+    head = data[:4096]
+    m = _META_CHARSET_RE.search(head)
+    if m:
+        enc = m.group(1).decode("ascii", errors="ignore").lower()
+        if enc in ("utf-8", "utf8"):
+            return "utf-8"
+        if enc in ("gbk", "gb2312", "gb18030"):
+            return "gbk"
+        if enc in ("utf-16", "utf-16le", "utf-16be"):
+            return "utf-16"
+        try:
+            b"x".decode(enc)
+            return enc
+        except (LookupError, UnicodeDecodeError):
+            pass
+
+    for enc in ("utf-8", "gbk", "mbcs"):
+        try:
+            data.decode(enc)
+            return enc
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return "utf-8"
+
+
+def file_get(url: str, timeout=30):
+    """读取 file:// URL 指向的本地文件，返回 FileResponse。
+
+    支持形式：
+        file:///D:/path/to/page.html
+        file://D:/path/to/page.html
+        file://host/share/page.html   （UNC）
+    """
+    from urllib.parse import urlparse, unquote
+    from pathlib import Path
+
+    parsed = urlparse(url)
+    raw = unquote(parsed.path or "")
+    if parsed.netloc:
+        # UNC: file://host/share/... → \\host\share\...
+        raw = "\\\\" + parsed.netloc + raw
+    else:
+        # Windows 盘符: /D:/x → D:/x
+        raw = raw.lstrip("/")
+
+    path = Path(raw)
+    if not path.is_file():
+        raise FileNotFoundError(f"本地文件不存在: {path}")
+
+    data = path.read_bytes()
+    encoding = _detect_file_encoding(data)
+    text = data.decode(encoding, errors="replace")
+    return FileResponse(str(path), text, encoding)
+
+
+# ============================================================
 #  HTTP 请求核心
 # ============================================================
 
@@ -219,8 +321,12 @@ def http_get(url, headers=None, timeout=30, retries=1,
         cache_expire: 缓存过期秒数（默认 3600）
 
     Returns:
-        requests.Response
+        requests.Response（file:// 时为 FileResponse）
     """
+    # v5.5: 本地文件协议直通，使 ES 搜索到的本地网页可复用同一套提取器
+    if url and url.lower().startswith("file:"):
+        return file_get(url, timeout=timeout)
+
     # 从 identity 构建 headers（如果未提供预构建 headers）
     if headers is None and identity is not None:
         req_headers = build_headers(identity=identity, cookie_str=cookie_str)

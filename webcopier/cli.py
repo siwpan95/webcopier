@@ -265,6 +265,194 @@ def cmd_forum(args, cfg, log):
 
 
 # ============================================================
+#  子命令：es（Everything 命令行搜索）
+# ============================================================
+
+def _fmt_size(n) -> str:
+    if n is None:
+        return ""
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024 or unit == "TB":
+            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024.0
+    return f"{n:.1f} TB"
+
+
+def _render_es_table(results, log, show_size=False):
+    """把结果渲染成对齐的表格"""
+    if not results:
+        return
+    col_size = max((len(_fmt_size(r.size)) for r in results), default=0)
+    col_size = max(col_size, 4)
+    for r in results:
+        if show_size:
+            log(f"  {_fmt_size(r.size).rjust(col_size)}  {r.path}")
+        else:
+            log(f"  {r.path}")
+
+
+def cmd_es(args, cfg, log):
+    from .everything import (EverythingSearcher, EverythingError,
+                             to_file_url, is_probably_webpage)
+
+    try:
+        searcher = EverythingSearcher(es_path=args.es_path or "",
+                                      timeout=args.timeout,
+                                      instance=args.instance or "")
+    except EverythingError as e:
+        log(f"[ERROR] {e}")
+        return 2
+
+    # ---------- 诊断模式 ----------
+    if args.status:
+        info = searcher.status()
+        log(f"  es.exe           : {info.get('es_path')}")
+        log(f"  ES 版本          : {info.get('es_version', '-')}")
+        log(f"  Everything 版本  : {info.get('everything_version', '-')}")
+        if info.get("ok"):
+            log("  连通性           : [OK] Everything 正在运行，IPC 可用")
+            return 0
+        log(f"  连通性           : [FAIL] {info.get('error')}")
+        log("  → 请先启动 Everything 后重试。")
+        return 1
+
+    if not args.query:
+        log("[ERROR] 缺少搜索词。用法: webcopier es \"关键词\"")
+        log("        诊断连通性: webcopier es --status")
+        return 2
+
+    # ---------- 执行搜索 ----------
+    columns = [c.strip() for c in (args.columns or "").split(",") if c.strip()]
+    if args.format == "table" and args.size:
+        if "size" not in columns:
+            columns.append("size")
+
+    try:
+        results = searcher.search(
+            args.query,
+            count=args.count,
+            match_path=args.match_path,
+            match_case=args.case,
+            regex=args.regex,
+            files_only=args.files_only,
+            folders_only=args.folders_only,
+            sort=args.sort or "",
+            columns=columns,
+            path_filter=args.path or "",
+            extra_args=list(args.es_args or []),
+        )
+    except EverythingError as e:
+        log(f"[ERROR] {e}")
+        return 1
+
+    if not results:
+        log("[结果] 没有匹配项。")
+        if not args.no_result_error:
+            return 0
+        return 3
+
+    # ---------- 输出 ----------
+    if args.format == "json":
+        import json as _json
+        log(_json.dumps([r.to_dict() for r in results],
+                        ensure_ascii=False, indent=2))
+    elif args.format == "csv":
+        import csv as _csv
+        import io
+        buf = io.StringIO()
+        w = _csv.writer(buf)
+        w.writerow(["path", "name", "size", "date_modified", "extension"])
+        for r in results:
+            w.writerow([r.path, r.name, r.size or "",
+                        r.date_modified, r.extension])
+        log(buf.getvalue().rstrip())
+    elif args.format == "paths":
+        for r in results:
+            log(r.path)
+    else:
+        _render_es_table(results, log, show_size=args.size)
+
+    log(f"\n[结果] 共 {len(results)} 项")
+
+    # ---------- 落盘 ----------
+    if args.out:
+        try:
+            with open(args.out, "w", encoding="utf-8", newline="") as f:
+                for r in results:
+                    f.write(r.path + "\n")
+            log(f"[OK] 路径清单已写入: {os.path.abspath(args.out)}")
+        except OSError as e:
+            log(f"[ERROR] 写入失败: {e}")
+            return 1
+
+    # ---------- 资源管理器定位 ----------
+    if args.open:
+        idx = args.open - 1
+        if 0 <= idx < len(results):
+            target = results[idx].path
+            try:
+                subprocess.run(["explorer", "/select,", target], check=False)
+                log(f"[OK] 已在资源管理器中定位: {target}")
+            except Exception as e:
+                log(f"[ERROR] 打开失败: {e}")
+        else:
+            log(f"[ERROR] 序号越界: {args.open}（共 {len(results)} 项）")
+
+    # ---------- 整合：直接提取本地网页正文 ----------
+    if args.extract:
+        return _es_extract(args, results, log)
+
+    return 0
+
+
+def _es_extract(args, results, log):
+    """把 ES 搜索结果中的本地网页送给 webcopier 提取器。"""
+    from .extractors import extract
+    from .writer import save_output, url_to_filename
+    from .everything import to_file_url, is_probably_webpage
+
+    targets = [r for r in results
+               if (args.extract_all or is_probably_webpage(r.path))
+               and not r.is_dir]
+
+    if not targets:
+        log("[整合] 结果中没有可提取的网页文件（.html/.htm/.mht）。")
+        log("       如需对所有文件尝试提取，加 --extract-all。")
+        return 0
+
+    if not args.extract_dir:
+        log("[ERROR] --extract 需要配合 --extract-dir 指定正文输出目录")
+        return 2
+
+    os.makedirs(args.extract_dir, exist_ok=True)
+    log(f"\n[整合] 对 {len(targets)} 个本地网页执行正文提取 -> "
+        f"{os.path.abspath(args.extract_dir)}")
+
+    ok = fail = 0
+    for i, r in enumerate(targets, 1):
+        url = to_file_url(r.path)
+        try:
+            text = extract(url, args.extract_method, {},
+                           random_delay=False)
+            if not text:
+                raise ValueError("未提取到正文")
+            # 必须传 file:// URL 而非 Windows 路径：url_to_filename 按 "/" 切分，
+            # 传裸路径会得到一整串被清洗过的路径（此前产出 Dwebcopier.debug... 这类怪名）
+            fname = url_to_filename(url, i)
+            path = save_output(text, url, fname, args.extract_dir,
+                               args.extract_format)
+            ok += 1
+            log(f"  [OK] ({i}/{len(targets)}) {len(text)} 字符 -> "
+                f"{os.path.basename(path)}")
+        except Exception as e:
+            fail += 1
+            log(f"  [FAIL] ({i}/{len(targets)}) {r.name[:40]}: {e}")
+
+    log(f"\n[整合] 提取完成：{ok} 成功 / {fail} 失败 / {len(targets)} 总计")
+    return 0 if fail == 0 else 1
+
+
+# ============================================================
 #  子命令：config
 # ============================================================
 
@@ -439,6 +627,55 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--user-agent", default="")
     p.add_argument("--curl-cffi", action="store_true")
     p.set_defaults(func=cmd_forum)
+
+    # ---------- es ----------
+    p = sub.add_parser(
+        "es", help="Everything 本地文件搜索（内置 ES）",
+        description=(
+            "调用内置的 ES（Everything 命令行接口）搜索本机文件。\n"
+            "Everything 必须处于运行状态——ES 通过命名管道与其通信。\n"
+            "搜索语法即 Everything 语法，例：\"foo ext:md\" \"bar path:C:\\\\work\""))
+    p.add_argument("query", nargs="?", help="搜索词（Everything 语法）")
+    p.add_argument("-n", "--count", type=int, default=20,
+                   help="结果条数上限（默认 20）")
+    p.add_argument("-f", "--format", default="table",
+                   choices=["table", "json", "csv", "paths"],
+                   help="输出格式（默认 table）")
+    p.add_argument("--columns", default="",
+                   help="附加显示列，逗号分隔（size / dm / dc / da / ext / attribs ...）")
+    p.add_argument("--size", action="store_true", help="表格中显示文件大小")
+    p.add_argument("--sort", default="",
+                   help="排序，如 name / size / date-modified（加 -descending 降序）")
+    p.add_argument("--path", default="", help="限定搜索目录（ES -path）")
+    p.add_argument("-i", "--case", action="store_true", help="区分大小写")
+    p.add_argument("-p", "--match-path", action="store_true",
+                   help="匹配完整路径而非仅文件名")
+    p.add_argument("-r", "--regex", action="store_true", help="正则表达式搜索")
+    p.add_argument("--files-only", action="store_true", help="仅文件")
+    p.add_argument("--folders-only", action="store_true", help="仅目录")
+    p.add_argument("-o", "--out", default="", help="把结果路径写入文件（每行一条）")
+    p.add_argument("--open", type=int, default=0, metavar="N",
+                   help="在资源管理器中定位第 N 条结果")
+    p.add_argument("--extract", action="store_true",
+                   help="[整合] 对结果中的本地网页直接提取正文")
+    p.add_argument("--extract-all", action="store_true",
+                   help="配合 --extract：不限扩展名，对所有结果尝试提取")
+    p.add_argument("--extract-dir", default="", help="配合 --extract：正文输出目录")
+    p.add_argument("--extract-method", default=cfg.get("method", "trafilatura"),
+                   choices=EXTRACT_METHODS, help="配合 --extract：提取方式")
+    p.add_argument("--extract-format", default="txt",
+                   choices=OUTPUT_FORMATS, help="配合 --extract：输出格式")
+    p.add_argument("--es-path", default="", help="指定 es.exe 路径（默认用项目 bin\\es.exe）")
+    p.add_argument("--instance", default="",
+                   help="Everything 实例名（留空使用默认实例）")
+    p.add_argument("--timeout", type=int, default=30, help="调用超时秒数")
+    p.add_argument("--status", action="store_true",
+                   help="只显示 Everything 连通性诊断")
+    p.add_argument("--no-result-error", action="store_true",
+                   help="无结果时返回非零退出码（便于脚本判断）")
+    p.add_argument("--es-args", nargs=argparse.REMAINDER, default=[],
+                   help="其余参数原样透传给 es.exe，如 --es-args -whole-word")
+    p.set_defaults(func=cmd_es)
 
     # ---------- config ----------
     p = sub.add_parser("config", help="查看/修改配置")

@@ -13,12 +13,14 @@ agent_created: true
 - `webcopier.bat`：命令提示符启动器（优先 .venv，回退系统 python）
 - `python -m webcopier`：无参数启动 GUI，带参数进 CLI
 - `WebCopier_GUI.py`：纯 GUI 入口
-- CLI 子命令：`fetch` / `batch` / `crawl` / `forum` / `config`
+- CLI 子命令：`fetch` / `batch` / `crawl` / `forum` / `config` / `es`
 
 ## 结构（v5.5）
 - `webcopier/cli.py`：argparse 命令行接口
 - `webcopier/forum.py`：论坛抓取（列表翻页 → 主题二级页翻页 → 逐帖提取）
-- `webcopier/http_client.py`：`strip_unsupported_encodings()` 剔除无法解码的压缩算法
+- `webcopier/everything.py`：ES 包装层（`EverythingSearcher` / `search` / `to_file_url`）
+- `webcopier/http_client.py`：`strip_unsupported_encodings()` 剔除无法解码的压缩算法；`file_get`/`FileResponse` 支持 `file://` 本地文件
+- `bin/es.exe`：voidtools Everything 命令行接口（MIT，随 Everything 发行，非本项目重写）
 - `config.json`：配置项
 
 ## 已知陷阱（重要）
@@ -36,6 +38,11 @@ agent_created: true
   曾导致 crawl 产物数对不上——按 session id 分组可辨）。用 `run_in_background` + 日志。
 - **Windows .bat**：必须纯 ASCII + UTF-8 无 BOM + CRLF，否则 cmd 按 GBK 解读会乱码/截断。
 - **控制台编码**：CLI 中 TTY 跟随代码页（GBK）、重定向用 UTF-8；`_safe_print` 兜底防 UnicodeEncodeError 中断抓取。
+- **ES 整合（Everything 命令行）**：`bin/es.exe` 是官方 MIT 二进制（随 Everything 发行），**不要**把 27k 行 C 源码搬进项目；用 `everything.py` 包装即可。运行时要求 Everything 主程序在跑（`es --status` 诊断）。ES 经命名管道 `\\.\PIPE\Everything IPC` 通信。
+  - 结构化输出优先 `-json`，但 ES 每行带逗号、末行无逗号，解析需容错（见 `_parse_json` 的逐行回退）。
+  - ES 搜索语法：目录过滤用尾部反斜杠 `-path D:\dir\`；`ext:md` / `-r` 正则 / `-p` 匹配路径。
+  - **真整合点**：`es --extract` 把结果中的本地网页经 `to_file_url()` 转 `file://` URL，再由 `http_client.file_get()` 读取（meta charset → BOM → utf-8 → gbk 自动探测），复用 6 种提取器。这是与 WebCopier CLI 的真实整合，非两个并排命令。
+- **file:// URL 的冒号**：`to_file_url` 必须用 `quote(as_posix, safe="/:")` 保留盘符冒号，否则 `file:///D%3A/...` 会让后续 urlparse 解析失败。**给提取器传 `to_file_url(r.path)` 而非裸 Windows 路径**——后者经 `url_to_filename` 按 `/` 切分会产出 `Dwebcopier.debug...` 这类怪名。
 - 依赖重（Playwright/ddddocr），改动先 py_compile + 冒烟。
 - 2026-08-23 从 notpython 误判区移回 tools\crawler（历史背景）。
 
