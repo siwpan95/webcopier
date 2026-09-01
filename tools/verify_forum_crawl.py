@@ -62,14 +62,26 @@ def main():
     failed = ckpt.get("failed", {})
 
     listed_total = sum(len(v) for v in listing.values())
-    print(f"  版块数: {len(listing)}  列表主题数: {listed_total}  "
-          f"已完成: {len(done)}  失败: {len(failed)}")
+    # 全站去重后的真实主题集合：同一主题可能被多个版块列表交叉收录，故按 tid 去重
+    listed_unique = set()
+    for v in listing.values():
+        for t in v:
+            listed_unique.add(str(t["tid"]) if isinstance(t, dict) else str(t))
+    done_unique = set(str(t) for t in done.keys())
+    print(f"  版块数: {len(listing)}  列表主题数(含交叉收录): {listed_total}  "
+          f"去重后: {len(listed_unique)}  已完成: {len(done)}  失败: {len(failed)}")
     for fid in sorted(listing, key=lambda x: int(x) if x.isdigit() else 0):
-        n_list = len(listing[fid])
+        list_tids = set(str(t["tid"]) if isinstance(t, dict) else str(t) for t in listing[fid])
+        n_list = len(list_tids)
         n_done = sum(1 for r in done.values() if str(r.get("forum_id")) == fid)
-        print(f"    版块 {fid}: 列表 {n_list} 条，已完成 {n_done} 条")
-        check(n_done == n_list, f"版块 {fid} 完成数 == 列表数 ({n_done}/{n_list})")
+        cross = n_list - n_done
+        print(f"    版块 {fid}: 去重列表 {n_list} 条，本版块完成 {n_done} 条"
+              + (f"，交叉收录 {cross} 条" if cross else ""))
+        missing = list_tids - done_unique
+        check(not missing, f"版块 {fid} 所有主题均已抓取（缺口 {len(missing)} 条）")
 
+    check(listed_unique == done_unique,
+          f"全站去重后 列表数({len(listed_unique)}) == 完成数({len(done_unique)})")
     check(len(failed) == 0, f"失败清单为空 (当前 {len(failed)} 条)")
 
     # --- 2. 索引一致性 ---
@@ -130,11 +142,17 @@ def main():
             fail_count += 1
             print(f"  [FAIL] 主题 {r.get('tid')} 文件结构损坏（缺少标题行）")
             continue
-        replies = int(r.get("replies", r.get("reply_count", 0)) or 0)
+        def _to_int(v, default=0):
+            try:
+                return int(v)
+            except (ValueError, TypeError):
+                return default
+        replies = _to_int(r.get("replies", r.get("reply_count", 0)))
+        posts = _to_int(r.get("posts", 0))
         label = f"{r.get('tid')} ({r.get('file')})"
-        if int(r.get("posts", 0)) <= 0 and replies > 0:
+        if posts <= 0 and replies > 0:
             low = txt.lower()
-            if "密码" in txt or "password" in low or "protected" in low:
+            if r.get("password_protected") or "密码" in txt or "password" in low or "protected" in low:
                 print(f"  [INFO] 合法空主题 {label}: 密码保护（游客不可见，0 帖为预期）")
             else:
                 warn_count += 1
