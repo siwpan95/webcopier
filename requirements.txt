@@ -5,7 +5,7 @@ ddddocr
 lxml
 newspaper
 Pillow
-readability
+readability-lxml
 requests
 requests_cache
 trafilatura

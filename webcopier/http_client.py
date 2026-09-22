@@ -19,7 +19,9 @@ from .constants import DEFAULT_HEADERS, ANTICRAWL_STATUS_CODES
 try:
     import requests_cache
     _HAS_REQUESTS_CACHE = True
-except ImportError:
+except Exception:
+    # v5.4 修复: requests_cache 导入时可能因环境内 bson 模块冲突抛出
+    # AttributeError（非 ImportError），此处捕获一切异常实现优雅降级
     _HAS_REQUESTS_CACHE = False
 
 # 模块级缓存 Session（惰性初始化，线程安全）
