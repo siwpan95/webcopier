@@ -19,8 +19,16 @@ from collections import defaultdict
 # ============================================================
 # 原 D:\allin 外部数据源已失效；通过环境变量 FAU_JSONL 指定 browsers.jsonl 路径
 FAU_JSONL = os.environ.get("FAU_JSONL", "")
-CURRENT_IDENTITIES = r"C:\Users\13122\Desktop\txt\webcopier\identities.json"
-OUTPUT = r"C:\Users\13122\Desktop\txt\webcopier\identities.json"
+# identities.json：环境变量 WEBCOPIER_IDENTITIES 覆盖，否则取仓内 webcopier/identities.json
+# （去本地化，原桌面绝对路径已失效；tools/ 与 webcopier/ 同级，由 __file__ 推导）
+_IDENTITIES = os.environ.get("WEBCOPIER_IDENTITIES") or os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "webcopier", "identities.json"
+)
+CURRENT_IDENTITIES = _IDENTITIES
+OUTPUT = _IDENTITIES
+_OUT_DIR = os.path.dirname(OUTPUT)
+if _OUT_DIR:
+    os.makedirs(_OUT_DIR, exist_ok=True)
 
 # 浏览器名 -> engine 内部名映射
 BROWSER_TO_ENGINE = {
