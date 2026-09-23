@@ -1,5 +1,7 @@
 # WebCopier — 网页正文抓取工具 v5.3
 
+> 仓库：<https://gitee.com/siwpan/webcopier> ｜ 许可：MIT（见 [LICENSE](LICENSE)）
+
 全功能网页正文抓取程序，支持多种提取方式和完善的反爬系统。
 
 ## 功能
