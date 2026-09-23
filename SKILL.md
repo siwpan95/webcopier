@@ -1,6 +1,6 @@
-﻿---
+---
 name: webcopier
-description: Maintain WebCopier v5.3 (G:/tools/crawler/webcopier). Web content extraction with anti-bot system.
+description: Maintain WebCopier v5.3 (本 SKILL.md 所在仓库根). Web content extraction with anti-bot system.
 agent_created: true
 ---
 
