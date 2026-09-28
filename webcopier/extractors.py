@@ -235,9 +235,10 @@ def extract_newspaper(url, headers, proxies=None, random_delay=False):
     raise ValueError("newspaper3k 未能提取到正文")
 
 
-def extract_playwright(url, wait_selector="article", timeout=30000,
-                       random_delay=False, use_local_browser=False,
-                       anti_detect=False, cookie_file=None):
+def extract_playwright(url, headers=None, proxies=None, wait_selector="article",
+                       timeout=30000, random_delay=False,
+                       use_local_browser=False, anti_detect=False,
+                       cookie_file=None):
     """
     使用 Playwright 动态渲染后提取正文（v5.3 重构）
     复用 playwright_utils.AntiDetectBrowser，消除与 playwright_utils 的功能重叠。
@@ -246,6 +247,9 @@ def extract_playwright(url, wait_selector="article", timeout=30000,
     - anti_detect 控制是否注入 stealth.min.js（通过 AntiDetectBrowser 实现）
     - cookie_file 透传给 AntiDetectBrowser，自动恢复/保存 storage_state
     - use_local_browser 透传给 AntiDetectBrowser(use_local_chrome=...)
+    - headers/proxies 仅为对齐统一入口 extract() 的兼容参数：
+      Playwright 走自身网络栈，proxies 不生效（忽略）；headers 中
+      User-Agent/Cookie 由 AntiDetectBrowser 身份池接管，同样忽略。
     """
     if not _HAS_PLAYWRIGHT:
         raise ImportError(
