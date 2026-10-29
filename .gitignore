@@ -6,3 +6,7 @@ __pycache__/
 build/
 dist/
 release/
+
+# 未跟踪产物/输出治理（2026-10-29 补）
+.debug/
+output/
